@@ -29,6 +29,9 @@ classifiers = [
   "Programming Language :: Python :: 3"
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [tool.setuptools]
 include-package-data = true
 zip-safe = false

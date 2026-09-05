@@ -34,6 +34,11 @@ class TopAgent:
         self.log_path = "./log"
         self.golden_tb_path: str | None = None
         self.golden_rtl_blackbox_path: str | None = None
+        # When set, run_instance() uses this file's content directly as tb.sv instead of
+        # generating one via tb_gen - no tb_gen.chat() call happens anywhere in that path,
+        # including the SimJudge-triggered regeneration branch below. Left unset (the
+        # default), behavior is unchanged from upstream MAGE.
+        self.external_tb_path: str | None = None
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
         self.sim_reviewer: SimReviewer | None = None
@@ -74,11 +79,25 @@ class TopAgent:
         assert self.sim_judge
         assert self.rtl_edit
 
-        self.tb_gen.reset()
-        self.tb_gen.set_golden_tb_path(self.golden_tb_path)
-        if not self.golden_tb_path:
-            logger.info("No golden testbench provided")
-        testbench, interface = self.tb_gen.chat(spec)
+        if self.external_tb_path:
+            if self.golden_tb_path:
+                logger.warning(
+                    "Both external_tb_path and golden_tb_path are set - "
+                    "external_tb_path takes precedence and golden_tb_path is ignored."
+                )
+            with open(self.external_tb_path, "r") as f:
+                testbench = f.read()
+            # No machine-usable interface accompanies an externally-supplied testbench;
+            # RTLGenerator's IF_PROMPT section is conditional on this being truthy (see
+            # rtl_generator.py), so an empty string just omits that optional prompt.
+            interface = ""
+            logger.info("Using externally supplied testbench (external_tb_path)")
+        else:
+            self.tb_gen.reset()
+            self.tb_gen.set_golden_tb_path(self.golden_tb_path)
+            if not self.golden_tb_path:
+                logger.info("No golden testbench provided")
+            testbench, interface = self.tb_gen.chat(spec)
         logger.info("Initial tb:")
         logger.info(testbench)
         logger.info("Initial if:")
@@ -109,6 +128,15 @@ class TopAgent:
             if is_sim_pass:
                 tb_need_fix = False
                 rtl_need_fix = False
+                break
+            if self.external_tb_path:
+                # An externally-supplied testbench is trusted by construction (it isn't
+                # LLM-generated) - every mismatch is treated as an RTL issue, never a
+                # TB-regeneration candidate. Skipping SimJudge here (rather than
+                # consulting it and only ignoring a True verdict) keeps the guarantee
+                # airtight: tb_gen.chat() is never reachable anywhere in this method
+                # when external_tb_path is set.
+                tb_need_fix = False
                 break
             self.sim_judge.reset()
             tb_need_fix = self.sim_judge.chat(spec, sim_log, rtl_code, testbench)
@@ -263,9 +291,11 @@ class TopAgent:
         spec: str,
         golden_tb_path: str | None = None,
         golden_rtl_blackbox_path: str | None = None,
+        external_tb_path: str | None = None,
     ) -> Tuple[bool, str]:
         self.golden_tb_path = golden_tb_path
         self.golden_rtl_blackbox_path = golden_rtl_blackbox_path
+        self.external_tb_path = external_tb_path
         log_dir_per_run = f"{self.log_path}/{benchmark_type_name}_{task_id}"
         self.output_dir_per_run = f"{self.output_path}/{benchmark_type_name}_{task_id}"
         os.makedirs(self.output_path, exist_ok=True)
