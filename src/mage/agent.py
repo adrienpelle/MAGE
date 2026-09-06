@@ -39,6 +39,7 @@ class TopAgent:
         # including the SimJudge-triggered regeneration branch below. Left unset (the
         # default), behavior is unchanged from upstream MAGE.
         self.external_tb_path: str | None = None
+        self.dependency_rtl_paths: List[str] | None = None
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
         self.sim_reviewer: SimReviewer | None = None
@@ -263,8 +264,9 @@ class TopAgent:
             self.sim_reviewer = SimReviewer(
                 self.output_dir_per_run,
                 self.golden_rtl_blackbox_path,
+                self.dependency_rtl_paths,
             )
-            self.rtl_gen = RTLGenerator(self.token_counter)
+            self.rtl_gen = RTLGenerator(self.token_counter, self.dependency_rtl_paths)
             self.tb_gen = TBGenerator(self.token_counter)
             self.sim_judge = SimJudge(self.token_counter)
             self.rtl_edit = RTLEditor(
@@ -292,10 +294,12 @@ class TopAgent:
         golden_tb_path: str | None = None,
         golden_rtl_blackbox_path: str | None = None,
         external_tb_path: str | None = None,
+        dependency_rtl_paths: List[str] | None = None,
     ) -> Tuple[bool, str]:
         self.golden_tb_path = golden_tb_path
         self.golden_rtl_blackbox_path = golden_rtl_blackbox_path
         self.external_tb_path = external_tb_path
+        self.dependency_rtl_paths = dependency_rtl_paths
         log_dir_per_run = f"{self.log_path}/{benchmark_type_name}_{task_id}"
         self.output_dir_per_run = f"{self.output_path}/{benchmark_type_name}_{task_id}"
         os.makedirs(self.output_path, exist_ok=True)

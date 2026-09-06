@@ -104,8 +104,13 @@ class RTLGenerator:
     def __init__(
         self,
         token_counter: TokenCounter,
+        dependency_rtl_paths: List[str] | None = None,
     ):
         self.token_counter = token_counter
+        # hiermage issue #60: already-verified sub-module RTL compiled alongside every
+        # syntax check, so a hierarchical top-module elaborates without having to redefine
+        # the modules it instantiates.
+        self.dependency_rtl_paths = dependency_rtl_paths
         self.generated_tb: str | None = None
         self.generated_if: str | None = None
         self.failed_trial: List[ChatMessage] = []
@@ -239,7 +244,7 @@ class RTLGenerator:
             rtl_code = resp_obj.module
             with open(rtl_path, "w") as f:
                 f.write(rtl_code)
-            syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path)
+            syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path, dependency_rtl_paths=self.dependency_rtl_paths)
             if syntax_correct:
                 break
             self.history.extend(
@@ -277,7 +282,7 @@ class RTLGenerator:
             for j in range(self.max_trials):
                 with open(rtl_path, "w") as f:
                     f.write(rtl_code)
-                syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path)
+                syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path, dependency_rtl_paths=self.dependency_rtl_paths)
                 ret[i] = (syntax_correct, rtl_code)
                 logger.info(
                     f"Candidate {i + 1} / {candidates_num} trial {j + 1} / {self.max_trials} syntax_correct: {syntax_correct}"
@@ -312,7 +317,7 @@ class RTLGenerator:
             rtl_code = self.parse_output(response).module
             with open(rtl_path, "w") as f:
                 f.write(rtl_code)
-            syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path)
+            syntax_correct, syntax_output = check_syntax(rtl_path=rtl_path, dependency_rtl_paths=self.dependency_rtl_paths)
             if syntax_correct:
                 break
             self.history.extend(

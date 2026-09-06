@@ -144,7 +144,7 @@ class RTLEditor:
 
     def replace_sanity_check(self) -> Dict[str, Any]:
         # Run syntax check and simulation check sequentially
-        is_syntax_pass, syntax_output = check_syntax(self.rtl_path)
+        is_syntax_pass, syntax_output = check_syntax(self.rtl_path, self.sim_reviewer.dependency_rtl_paths)
         if is_syntax_pass:
             syntax_output = "Syntax check passed."
         if not is_syntax_pass:

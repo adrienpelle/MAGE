@@ -21,8 +21,27 @@ def stderr_all_lines_benign(stderr: str) -> bool:
     )
 
 
-def check_syntax(rtl_path: str) -> Tuple[bool, str]:
-    cmd = f"iverilog -t null -Wall -Winfloop -Wno-timescale -g2012 -o /dev/null {rtl_path}"
+def _dependency_args(dependency_rtl_paths: List[str] | None) -> str:
+    """Extra already-verified RTL files to compile alongside the module under test.
+
+    Added for hiermage issue #60: a hierarchical top-module instantiates sub-modules it does
+    not define, so compiling its rtl.sv alone fails elaboration with "Unknown module type",
+    and the repair loop's only way out is to inline (usually stub) definitions of them -
+    silently discarding the sub-module RTL that was already generated and verified. Passing
+    the real ones here keeps the bottom-up guarantee intact.
+    """
+    if not dependency_rtl_paths:
+        return ""
+    return " " + " ".join(dependency_rtl_paths)
+
+
+def check_syntax(
+    rtl_path: str, dependency_rtl_paths: List[str] | None = None
+) -> Tuple[bool, str]:
+    cmd = (
+        "iverilog -t null -Wall -Winfloop -Wno-timescale -g2012 -o /dev/null "
+        f"{rtl_path}{_dependency_args(dependency_rtl_paths)}"
+    )
     is_pass, sim_output = run_bash_command(cmd, timeout=60)
     sim_output_obj = CommandResult.model_validate_json(sim_output)
     is_pass = (
@@ -50,6 +69,7 @@ def sim_review_mismatch_cnt(stdout: str) -> int:
 def sim_review(
     output_path_per_run: str,
     golden_rtl_path: str | None = None,
+    dependency_rtl_paths: List[str] | None = None,
 ) -> Tuple[bool, int, str]:
     rtl_path = f"{output_path_per_run}/rtl.sv"
     vvp_name = f"{output_path_per_run}/sim_output.vvp"
@@ -58,8 +78,13 @@ def sim_review(
         golden_rtl_path = ""
     if os.path.isfile(vvp_name):
         os.remove(vvp_name)
-    cmd = "iverilog -Wall -Winfloop -Wno-timescale -g2012 -o {} {} {} {}; vvp -n {}".format(
-        vvp_name, tb_path, rtl_path, golden_rtl_path, vvp_name
+    cmd = "iverilog -Wall -Winfloop -Wno-timescale -g2012 -o {} {} {} {}{}; vvp -n {}".format(
+        vvp_name,
+        tb_path,
+        rtl_path,
+        golden_rtl_path,
+        _dependency_args(dependency_rtl_paths),
+        vvp_name,
     )
     is_pass, sim_output = run_bash_command(cmd, timeout=60)
     sim_output_obj = CommandResult.model_validate_json(sim_output)
@@ -84,14 +109,17 @@ class SimReviewer:
         self,
         output_path_per_run: str,
         golden_rtl_path: str | None = None,
+        dependency_rtl_paths: List[str] | None = None,
     ):
         self.output_path_per_run = output_path_per_run
         self.golden_rtl_path = golden_rtl_path
+        self.dependency_rtl_paths = dependency_rtl_paths
 
     def review(self) -> Tuple[bool, int, str]:
         return sim_review(
             self.output_path_per_run,
             self.golden_rtl_path,
+            self.dependency_rtl_paths,
         )
 
 
