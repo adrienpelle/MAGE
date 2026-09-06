@@ -109,6 +109,11 @@ class ActionInput(BaseModel):
     args: Dict[str, Any]
 
 
+# Matches TBGenerator/RTLGenerator's own convention for signalling an undecodable response
+# through the normal return value rather than an exception.
+JSON_DECODE_ERROR_PREFIX = "Json Decode Error"
+
+
 class RTLEditorStepOutput(BaseModel):
     reasoning: str
     action_input: ActionInput
@@ -123,6 +128,7 @@ class RTLEditor:
         self.token_counter = token_counter
         self.history: List[ChatMessage] = []
         self.max_trials = 15
+        self.json_decode_max_trial = 3
         self.succeed_history_max_length = 10
         self.fail_history_max_length = 6
         self.is_done = False
@@ -344,15 +350,30 @@ class RTLEditor:
         ]
 
     def parse_output(self, response: ChatResponse) -> RTLEditorStepOutput:
-        output_json_obj: Dict = json.loads(response.message.content, strict=False)
-        action_input = output_json_obj["action_input"]
-        command = action_input["command"]
+        """Parse one editing step out of the model's JSON response.
 
-        args = action_input["args"]
-        return RTLEditorStepOutput(
-            reasoning=output_json_obj["reasoning"],
-            action_input=ActionInput(command=command, args=args),
-        )
+        Guarded the same way `RTLGenerator.parse_output` and `TBGenerator.parse_output`
+        already are (llm-hw-generator issue #62): an undecodable response is reported as a
+        `Json Decode Error` reasoning for `chat()` to retry, not raised. Before this, the
+        editor was the only one of the three that let a `JSONDecodeError` escape, so an empty
+        model response took down the whole TopAgent pipeline - observed in that project's
+        issue #57, where `json.loads("")` raised
+        `Expecting value: line 1 column 1 (char 0)` on all three of its outer attempts.
+        """
+        try:
+            output_json_obj: Dict = json.loads(response.message.content, strict=False)
+            action_input = output_json_obj["action_input"]
+            return RTLEditorStepOutput(
+                reasoning=output_json_obj["reasoning"],
+                action_input=ActionInput(
+                    command=action_input["command"], args=action_input["args"]
+                ),
+            )
+        except json.decoder.JSONDecodeError as e:
+            return RTLEditorStepOutput(
+                reasoning=f"{JSON_DECODE_ERROR_PREFIX}: {str(e)}",
+                action_input=ActionInput(command="", args={}),
+            )
 
     def run_action(self, action_input: ActionInput) -> Dict[str, Any]:
         logger.info(f"Action input: {action_input}")
@@ -400,6 +421,7 @@ class RTLEditor:
         is_pass = False
         succeed_history: List[ChatMessage] = []
         fail_history: List[ChatMessage] = []
+        json_decode_failures = 0
         for i in range(self.max_trials):
             logger.info(f"RTL Editing: round {i + 1} / {self.max_trials}")
             response = self.generate(
@@ -409,7 +431,32 @@ class RTLEditor:
                 + self.get_order_prompt_messages()
             )
             new_contents = [response.message]
-            action_input = self.parse_output(response).action_input
+            step_output = self.parse_output(response)
+            if step_output.reasoning.startswith(JSON_DECODE_ERROR_PREFIX):
+                json_decode_failures += 1
+                logger.info(
+                    f"RTL editing: {step_output.reasoning} "
+                    f"({json_decode_failures} / {self.json_decode_max_trial})"
+                )
+                if json_decode_failures >= self.json_decode_max_trial:
+                    # Reported, not raised. Unlike TBGenerator - which has no partial result
+                    # to hand back and so raises - the editor always has real RTL on disk, so
+                    # ending the repair loop as an ordinary failure returns something usable
+                    # instead of turning a bad response into a pipeline crash.
+                    logger.error(
+                        "RTL editing gave up: model response could not be decoded as JSON "
+                        f"{json_decode_failures} times. Last content: "
+                        f"{response.message.content!r}"
+                    )
+                    break
+                fail_history.extend(
+                    [
+                        response.message,
+                        ChatMessage(role=MessageRole.USER, content=step_output.reasoning),
+                    ]
+                )
+                continue
+            action_input = step_output.action_input
             action_output = self.run_action(action_input)
             if self.is_done:
                 is_pass = True
