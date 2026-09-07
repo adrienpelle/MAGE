@@ -39,6 +39,7 @@ class TopAgent:
         # including the SimJudge-triggered regeneration branch below. Left unset (the
         # default), behavior is unchanged from upstream MAGE.
         self.external_tb_path: str | None = None
+        self.external_tb_prompt_path: str | None = None
         self.dependency_rtl_paths: List[str] | None = None
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
@@ -108,9 +109,22 @@ class TopAgent:
         self.rtl_gen.reset()
         logger.info(spec)
 
+        # llm-hw-generator issue #63: what the model is *shown* may be a capped version of
+        # what it is *checked against*. tb.sv above is always the full testbench, and every
+        # simulation runs against that; only the prompt copy is ever abbreviated.
+        prompt_testbench = testbench
+        if self.external_tb_prompt_path:
+            with open(self.external_tb_prompt_path, "r") as f:
+                prompt_testbench = f.read()
+            logger.info(
+                "Using an abbreviated testbench for the RTL-generation prompt "
+                f"({len(prompt_testbench)} of {len(testbench)} bytes); simulation still "
+                "uses the full one."
+            )
+
         is_syntax_pass, rtl_code = self.rtl_gen.chat(
             input_spec=spec,
-            testbench=testbench,
+            testbench=prompt_testbench,
             interface=interface,
             rtl_path=os.path.join(self.output_dir_per_run, "rtl.sv"),
         )
@@ -168,7 +182,11 @@ class TopAgent:
             candidates = [
                 self.rtl_gen.chat(
                     input_spec=spec,
-                    testbench=testbench,
+                    # Abbreviated here too. This branch fires rtl_max_candidates requests
+                    # whenever a first draft fails simulation, so leaving it on the full
+                    # testbench would reproduce the very budget overrun issue #63 removes,
+                    # on the path *before* RTLEditor ever runs.
+                    testbench=prompt_testbench,
                     interface=interface,
                     rtl_path=os.path.join(self.output_dir_per_run, "rtl.sv"),
                     enable_cache=True,
@@ -177,7 +195,7 @@ class TopAgent:
             if self.rtl_max_candidates > 1:
                 candidates += self.rtl_gen.gen_candidates(
                     input_spec=spec,
-                    testbench=testbench,
+                    testbench=prompt_testbench,
                     interface=interface,
                     rtl_path=os.path.join(self.output_dir_per_run, "rtl.sv"),
                     candidates_num=self.rtl_max_candidates - 1,
@@ -270,7 +288,9 @@ class TopAgent:
             self.tb_gen = TBGenerator(self.token_counter)
             self.sim_judge = SimJudge(self.token_counter)
             self.rtl_edit = RTLEditor(
-                self.token_counter, sim_reviewer=self.sim_reviewer
+                self.token_counter,
+                sim_reviewer=self.sim_reviewer,
+                prompt_tb_path=self.external_tb_prompt_path,
             )
             ret = (
                 self.run_instance(spec)
@@ -294,11 +314,13 @@ class TopAgent:
         golden_tb_path: str | None = None,
         golden_rtl_blackbox_path: str | None = None,
         external_tb_path: str | None = None,
+        external_tb_prompt_path: str | None = None,
         dependency_rtl_paths: List[str] | None = None,
     ) -> Tuple[bool, str]:
         self.golden_tb_path = golden_tb_path
         self.golden_rtl_blackbox_path = golden_rtl_blackbox_path
         self.external_tb_path = external_tb_path
+        self.external_tb_prompt_path = external_tb_prompt_path
         self.dependency_rtl_paths = dependency_rtl_paths
         log_dir_per_run = f"{self.log_path}/{benchmark_type_name}_{task_id}"
         self.output_dir_per_run = f"{self.output_path}/{benchmark_type_name}_{task_id}"

@@ -124,11 +124,17 @@ class RTLEditor:
         self,
         token_counter: TokenCounter,
         sim_reviewer: SimReviewer,
+        prompt_tb_path: str | None = None,
     ):
         self.token_counter = token_counter
         self.history: List[ChatMessage] = []
         self.max_trials = 15
         self.json_decode_max_trial = 3
+        # llm-hw-generator issue #63: when set, this file's contents go into the repair
+        # prompt in place of tb.sv's. The simulated testbench is unchanged - only what the
+        # model is shown is capped, because an exhaustive testbench can be large enough to
+        # exceed the model's whole input budget on its own.
+        self.prompt_tb_path = prompt_tb_path
         self.succeed_history_max_length = 10
         self.fail_history_max_length = 6
         self.is_done = False
@@ -318,7 +324,7 @@ class RTLEditor:
             actions="".join([self.gen_action_prompt(action) for action in actions])
         )
         system_prompt = ChatMessage(content=actions_prompt, role=MessageRole.SYSTEM)
-        with open(self.tb_path, "r") as f:
+        with open(self.prompt_tb_path or self.tb_path, "r") as f:
             generated_tb = f.read()
         edit_init_prompt = ChatMessage(
             content=INIT_EDITION_PROMPT.format(
