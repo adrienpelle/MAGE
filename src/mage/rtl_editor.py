@@ -1,6 +1,6 @@
 import json
 from inspect import signature
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from llama_index.core.base.llms.types import ChatMessage, ChatResponse, MessageRole
 from pydantic import BaseModel
@@ -125,6 +125,7 @@ class RTLEditor:
         token_counter: TokenCounter,
         sim_reviewer: SimReviewer,
         prompt_tb_path: str | None = None,
+        sim_log_summarizer: Callable[[str], str] | None = None,
     ):
         self.token_counter = token_counter
         self.history: List[ChatMessage] = []
@@ -135,11 +136,22 @@ class RTLEditor:
         # model is shown is capped, because an exhaustive testbench can be large enough to
         # exceed the model's whole input budget on its own.
         self.prompt_tb_path = prompt_tb_path
+        # llm-hw-generator issue #64: an optional hook reducing a simulation log before it
+        # enters a prompt. Left unset, nothing is reduced and this class behaves exactly as
+        # it did (ADR 0006's fork contract). The policy lives with the caller because the
+        # caller owns the log's format - MAGE only knows it is text.
+        self.sim_log_summarizer = sim_log_summarizer
         self.succeed_history_max_length = 10
         self.fail_history_max_length = 6
         self.is_done = False
         self.last_mismatch_cnt: int | None = None
         self.sim_reviewer = sim_reviewer
+
+    def _shown_sim_log(self, sim_log: str) -> str:
+        """One simulation log as a model should see it. Every prompt path goes through here;
+        the decision-making copies (`self.sim_failed_log`, `sim_review`'s own return) never
+        do."""
+        return self.sim_log_summarizer(sim_log) if self.sim_log_summarizer else sim_log
 
     def reset(self):
         self.is_done = False
@@ -171,7 +183,10 @@ class RTLEditor:
         return {
             "is_syntax_pass": True,
             "is_sim_pass": is_sim_pass,
-            "error_msg": "" if is_sim_pass else sim_output,
+            # Reduced for the same reason and by the same hook as the init prompt: this
+            # dict is json.dumps'd into a USER message every editing round, so it is by far
+            # the larger half of the cost (llm-hw-generator issue #64).
+            "error_msg": "" if is_sim_pass else self._shown_sim_log(sim_output),
             "sim_mismatch_cnt": sim_mismatch_cnt,
         }
 
@@ -330,7 +345,11 @@ class RTLEditor:
             content=INIT_EDITION_PROMPT.format(
                 input_spec=self.spec,
                 generated_tb=generated_tb,
-                sim_failed_log=self.sim_failed_log,
+                # llm-hw-generator issue #64: the log scales with the stimulus count and is
+                # carried into every editing round. Its passing comparisons are elided; every
+                # mismatch, and the verdict, are kept. self.sim_failed_log itself is
+                # untouched - only what the model is shown changes.
+                sim_failed_log=self._shown_sim_log(self.sim_failed_log),
             ),
             role=MessageRole.USER,
         )

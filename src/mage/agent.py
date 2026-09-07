@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import traceback
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from llama_index.core.llms import LLM
 
@@ -40,6 +40,8 @@ class TopAgent:
         # default), behavior is unchanged from upstream MAGE.
         self.external_tb_path: str | None = None
         self.external_tb_prompt_path: str | None = None
+        # llm-hw-generator issue #64; see RTLEditor.sim_log_summarizer.
+        self.sim_log_summarizer: Callable[[str], str] | None = None
         self.dependency_rtl_paths: List[str] | None = None
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
@@ -154,14 +156,18 @@ class TopAgent:
                 tb_need_fix = False
                 break
             self.sim_judge.reset()
-            tb_need_fix = self.sim_judge.chat(spec, sim_log, rtl_code, testbench)
+            tb_need_fix = self.sim_judge.chat(
+                spec, self._shown_sim_log(sim_log), rtl_code, testbench
+            )
             if tb_need_fix:
                 self.tb_gen.reset()
                 if i == 0:
                     self.tb_gen.gen_display_queue = False
                     logger.info("Fallback from display queue to display moment")
                 else:
-                    self.tb_gen.set_failed_trial(sim_log, rtl_code, testbench)
+                    self.tb_gen.set_failed_trial(
+                        self._shown_sim_log(sim_log), rtl_code, testbench
+                    )
 
                 testbench, _ = self.tb_gen.chat(spec)
                 self.write_output(testbench, "tb.sv")
@@ -274,6 +280,12 @@ class TopAgent:
         self.write_output(rtl_code, "rtl.sv")
         return is_syntax_pass, rtl_code
 
+    def _shown_sim_log(self, sim_log: str) -> str:
+        """One simulation log as a model should see it (llm-hw-generator issue #64). Every
+        prompt path goes through here; `sim_review`'s own return value, the mismatch count and
+        the pass/fail decision are always computed from the full log."""
+        return self.sim_log_summarizer(sim_log) if self.sim_log_summarizer else sim_log
+
     def _run(self, spec: str) -> Tuple[bool, str]:
         try:
             if os.path.exists(f"{self.output_dir_per_run}/properly_finished.tag"):
@@ -291,6 +303,7 @@ class TopAgent:
                 self.token_counter,
                 sim_reviewer=self.sim_reviewer,
                 prompt_tb_path=self.external_tb_prompt_path,
+                sim_log_summarizer=self.sim_log_summarizer,
             )
             ret = (
                 self.run_instance(spec)
